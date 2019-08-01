@@ -3,6 +3,8 @@
 //
 
 #include "phoxi_camera/PhoXiInterface.h"
+#include <stdio.h>
+#include <cv_bridge/cv_bridge.h>
 
 PhoXiInterface::PhoXiInterface() : minIntensity(0.0f), maxIntensity(0.0f), generatePointCloudWithOnlyValidPoints(false) {
 
@@ -73,28 +75,20 @@ std::shared_ptr<pcl::PointCloud<pcl::PointXYZRGBNormal>> PhoXiInterface::getPoin
     if (!frame || !frame->Successful) {
         throw CorruptedFrame("Corrupted frame!");
     }
-    bool autoMinMaxIntensityUsed = false;
+
     bool textureAvailable = scanner->OutputSettings->SendTexture && !frame->Texture.Empty();
-    if (textureAvailable) {
-        if (minIntensity < 0.0f || maxIntensity <= 0.0f || minIntensity >= maxIntensity) {
-            minIntensity = std::numeric_limits<float>::max();
-            maxIntensity = std::numeric_limits<float>::min();
-            autoMinMaxIntensityUsed = true;
-            for(int r = 0; r < frame->Texture.Size.Height; r++) {
-                for (int c = 0; c < frame->Texture.Size.Width; c++) {
-                    auto point = frame->PointCloud.At(r,c);
-                    if (point != invalidPoint) { // check only valid points
-                        float intensity = frame->Texture.At(r,c);
-                        if (intensity > maxIntensity)
-                            maxIntensity = intensity;
-                        if (intensity < minIntensity)
-                            minIntensity = intensity;
-                    }
-                }
-            }
-        }
+    cv::Mat cvRgbTexture;
+    if (textureAvailable)
+    {
+        cv::Mat cvGreyTexture(frame->Texture.Size.Height, frame->Texture.Size.Width, CV_32FC1, frame->Texture.operator[](0));
+        cv::normalize(cvGreyTexture, cvGreyTexture, 0, 255, CV_MINMAX);
+        cvGreyTexture.convertTo(cvGreyTexture, CV_8U);
+        cv::equalizeHist(cvGreyTexture, cvGreyTexture);
+        cv::cvtColor(cvGreyTexture, cvRgbTexture, CV_GRAY2RGB);
     }
+
     bool normalMapAvailable = scanner->OutputSettings->SendNormalMap && !frame->NormalMap.Empty();
+
     std::shared_ptr<pcl::PointCloud<pcl::PointXYZRGBNormal>> cloud;
     if (generatePointCloudWithOnlyValidPoints)
         cloud = std::shared_ptr< pcl::PointCloud<pcl::PointXYZRGBNormal> >(new pcl::PointCloud<pcl::PointXYZRGBNormal>());
@@ -118,12 +112,11 @@ std::shared_ptr<pcl::PointCloud<pcl::PointXYZRGBNormal>> PhoXiInterface::getPoin
                         pclPoint.normal_z = normal.z;
                     }
                     if (textureAvailable) {
-                        float intensityMaxTruncated = std::min((float)frame->Texture.At(r,c), maxIntensity);
-                        float intensityMinTruncated = std::max(intensityMaxTruncated, minIntensity);
-                        auto intensity8Bits = (uint8_t)((intensityMinTruncated - minIntensity) / (maxIntensity - minIntensity) * std::numeric_limits<uint8_t>::max());
-                        pclPoint.r = intensity8Bits;
-                        pclPoint.g = intensity8Bits;
-                        pclPoint.b = intensity8Bits;
+                        cv::Vec3b rgb = cvRgbTexture.at<cv::Vec3b>(r,c);
+                        pclPoint.r = rgb[0];
+                        pclPoint.g = rgb[1];
+                        pclPoint.b = rgb[2];
+
                     }
                 } else {
                     pclPoint.x = std::numeric_limits<float>::quiet_NaN();
@@ -137,10 +130,7 @@ std::shared_ptr<pcl::PointCloud<pcl::PointXYZRGBNormal>> PhoXiInterface::getPoin
             }
         }
     }
-    if (autoMinMaxIntensityUsed) {
-        minIntensity = 0.0f;
-        maxIntensity = 0.0f;
-    }
+
     return cloud;
 }
 
